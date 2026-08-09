@@ -1,12 +1,13 @@
 #include "Config.h"
 #include "HeartSensor.h"
 #include "LidarSensor.h"
+#include "BrakeController.h"
 #include "ServoBrake.h"
 
-// 객체 생성 (Arduino Mega 멀티 하드웨어 시리얼 포트 할당)
-HeartSensor heart(HEART_PIN);
+HeartSensor heart(HEART_PIN, BUTTON_PIN);
 LidarSensor leftLidar(&Serial1);
 LidarSensor rightLidar(&Serial2);
+BrakeController brakeController;
 ServoBrake brake;
 
 void setup() {
@@ -20,94 +21,62 @@ void setup() {
 void loop() {
     unsigned long currentTime = millis();
 
-    // 센서 데이터 갱신 (비동기 폴링)
     heart.update(currentTime);
     leftLidar.update(currentTime);
     rightLidar.update(currentTime);
 
-    // 심박 상태 및 양측 라이다 기반 계산 제동각 추정
-    SystemState heartState = heart.getState();
-    int leftBrakeAngle = leftLidar.calculateBrakeAngle();
-    int rightBrakeAngle = rightLidar.calculateBrakeAngle();
+    int leftTargetAngle = leftLidar.calculateBrakeAngle();
+    int rightTargetAngle = rightLidar.calculateBrakeAngle();
 
-    // 두 채널 중 위험도가 높은(각도가 큰) 결과 채택
-    int finalBrakeAngle = max(leftBrakeAngle, rightBrakeAngle);
+    int rightFinalAngle = brakeController.update(
+        currentTime,
+        leftTargetAngle,
+        rightTargetAngle,
+        heart.isNoPulseResponse(),
+        heart.getResponseStartTime());
 
-    // 탑승자 건강 상태 FSM에 기반한 Fail-Safe 제동 신호 제어
-    if (heartState == STATE_SETTLING || heartState == STATE_CALIBRATING) {
-        // 학습 및 센서 안정화 구간에는 임의 주행 방지를 위해 긴급 제동 유지
-        brake.writeEmergencyStop();
-        finalBrakeAngle = 90;
-    } 
-    else if (heartState == STATE_CARDIAC_ARREST || heartState == STATE_PANIC) {
-        // 급격한 심박 변화 또는 심정지 감지 시 즉각 완전 제동
-        brake.writeEmergencyStop();
-        finalBrakeAngle = 90;
-    } 
-    else if (heartState == STATE_DANGER_SUSPECTED) {
-        // 위험 의심 상태(3초 무맥박) 진입 시 소프트 제동 적용(최소 45도 보장)
-        finalBrakeAngle = max(finalBrakeAngle, 45);
-        brake.writeAngle(finalBrakeAngle);
-    } 
-    else {
-        // 정상 상태인 경우 라이다가 연산한 물리 비례 제동 각도 실시간 반영
-        brake.writeAngle(finalBrakeAngle);
-    }
+    brake.writeAngle(rightFinalAngle);
 
-    // 개발자 디버그용 실시간 텔레메트리 출력 (250ms 주기)
-    static unsigned long lastLogTime = 0;
-    if (currentTime - lastLogTime >= 250) {
-        lastLogTime = currentTime;
-        
-        // 초기 보정 완료 후(NORMAL 이상) 주행 데이터 시리얼 출력
-        if (heartState >= STATE_NORMAL) {
-            
-            // 고정 길이 상태 문자열 매칭 (출력 자릿수 정렬용)
-            const char* fsmStr = "NORMAL ";
-            if (heartState == STATE_DANGER_SUSPECTED) fsmStr = "SUSPECT";
-            else if (heartState == STATE_CARDIAC_ARREST) fsmStr = "ARREST ";
-            else if (heartState == STATE_PANIC)           fsmStr = "PANIC  ";
+    static unsigned long lastPrintTime = 0;
+    if (currentTime - lastPrintTime >= 250) {
+        lastPrintTime = currentTime;
 
-            // 시스템 FSM 및 심박 값 출력
-            Serial.print("[SYS:"); Serial.print(fsmStr);
-            Serial.print(" H_AVG:"); 
-            int avgVal = heart.getAverageValue();
-            Serial.print(avgVal);
-            if (avgVal < 10) Serial.print("  ");
-            else if (avgVal < 100) Serial.print(" ");
-            Serial.print("] | ");
-            
-            // L1 라이다 실시간 데이터 출력
-            Serial.print("L1[D:"); Serial.print(leftLidar.getDistance()); 
-            Serial.print("cm, V:"); Serial.print((int)leftLidar.getSpeed()); Serial.print("cm/s, T:");
-            if (leftLidar.getTTC() >= 99.0) {
-                Serial.print("SAFE");
-            } else {
-                Serial.print(leftLidar.getTTC(), 1); Serial.print("s");
-            }
-            Serial.print("] | ");
+        int leftFinalAngle = 180 - rightFinalAngle;
 
-            // L2 라이다 실시간 데이터 출력
-            Serial.print("L2[D:"); Serial.print(rightLidar.getDistance()); 
-            Serial.print("cm, V:"); Serial.print((int)rightLidar.getSpeed()); Serial.print("cm/s, T:");
-            if (rightLidar.getTTC() >= 99.0) {
-                Serial.print("SAFE");
-            } else {
-                Serial.print(rightLidar.getTTC(), 1); Serial.print("s");
-            }
-            
-            // 최종 제동 서보 각도 및 인디케이터 출력
-            Serial.print("] ➔ OUT:");
-            if (finalBrakeAngle < 10) Serial.print(" "); 
-            Serial.print(finalBrakeAngle);
+        Serial.print("좌측 속도: ");
+        Serial.print((int)leftLidar.getSpeed());
+        Serial.print(" | 우측 속도: ");
+        Serial.print((int)rightLidar.getSpeed());
 
-            if (finalBrakeAngle >= 90) {
-                Serial.println("도 🔴 [EMERGENCY]");
-            } else if (finalBrakeAngle > 0) {
-                Serial.println("도 🟡 [P-BRAKE]");
-            } else {
-                Serial.println("도 🟢 [RELEASE]");
-            }
+        Serial.print(" | 평균 BPM: ");
+        if (heart.isNoPulseResponse()) {
+            Serial.print("0");
+        } else if (!heart.isContactDetected()) {
+            Serial.print("--(센서 접촉 확인 필요)");
+        } else if (heart.hasAverageBPM()) {
+            Serial.print(heart.getAverageBPM());
+        } else {
+            Serial.print("--(측정 준비 중)");
+        }
+
+        Serial.print(" | 좌측 제동각: ");
+        Serial.print(leftFinalAngle);
+        Serial.print(" | 우측 제동각: ");
+        Serial.print(rightFinalAngle);
+
+        if (heart.isNoPulseResponse()) {
+            Serial.print("도 [무맥박 상태 대응 제동 중] 제동률: ");
+            Serial.print(map(rightFinalAngle, 180, 0, 0, 100));
+            Serial.println("%");
+        } else if (brakeController.isHoldActive(currentTime) &&
+                   brakeController.getApproachCount() == 0) {
+            Serial.println("도 [자동 제동 유지 중]");
+        } else if (rightFinalAngle <= 0) {
+            Serial.println("도 [즉시 제동]");
+        } else if (rightFinalAngle < 180) {
+            Serial.println("도 [비례 제동]");
+        } else {
+            Serial.println("도 [제동 해제]");
         }
     }
 }
