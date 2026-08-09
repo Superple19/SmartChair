@@ -4,44 +4,38 @@
 #include <Arduino.h>
 #include "Config.h"
 
-enum SystemState {
-    STATE_SETTLING,          // 0단계: 기동 후 센서 안정화 대기
-    STATE_CALIBRATING,       // 1단계: 사용자 개별 맥박 학습
-    STATE_NORMAL,            // 2단계: 정상 주행 상태
-    STATE_DANGER_SUSPECTED,  // 3단계: 무맥박 위험 의심 (3초 대기)
-    STATE_CARDIAC_ARREST,    // 4단계: 심정지 또는 센서 이탈 확정
-    STATE_PANIC              // 5단계: 패닉 및 과흥분 확정
-};
-
 class HeartSensor {
 private:
     int pin;
-    SystemState currentState;
-    unsigned long bootTime;
-    int calMax;
-    int calMin;
-    int threshold;
-    int upperLimit;
-    int lowerLimit;
-    bool isCalibrated;
+    int buttonPin;
 
-    int readings[NUM_READINGS];
-    int readIndex;
-    long total;
-    int averageHeartValue;
+    bool noPulseResponse;
+    unsigned long responseStartTime;
 
     unsigned long lastBeatTime;
-    bool isBeat;
-    unsigned long lastPrintTime;
+    bool hrLastState;
+    int bpm;
+    int invalidPulseCount;
 
-    void executeDebugPrint(unsigned long currentTime);
+    int bpmReadings[NUM_BPM_READINGS];
+    int bpmReadIndex;
+    int averageBPM;
+    bool isBpmReady;
+    bool contactDetected;
+    bool contactLostNotified;
+    unsigned long lastHrReadTime;
 
 public:
-    HeartSensor(int inputPin);
+    HeartSensor(int inputPin, int simButtonPin = BUTTON_PIN);
+
     void init();
     void update(unsigned long currentTime);
-    SystemState getState() const;
-    int getAverageValue() const;
+
+    bool isNoPulseResponse() const;
+    unsigned long getResponseStartTime() const;
+    bool isContactDetected() const;
+    bool hasAverageBPM() const;
+    int getAverageBPM() const;
 };
 
 #endif

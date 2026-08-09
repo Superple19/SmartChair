@@ -1,138 +1,149 @@
 #include "HeartSensor.h"
-#include "Config.h" // NUM_READINGS 매크로 참조를 위해 추가
 
-HeartSensor::HeartSensor(int inputPin) : pin(inputPin), currentState(STATE_SETTLING), 
-    calMax(0), calMin(1023), threshold(0), upperLimit(1023), lowerLimit(0), 
-    isCalibrated(false), readIndex(0), total(0), averageHeartValue(0), 
-    lastBeatTime(0), isBeat(false), lastPrintTime(0) {
-    for (int i = 0; i < NUM_READINGS; i++) {
-        readings[i] = 0;
+HeartSensor::HeartSensor(int inputPin, int simButtonPin)
+    : pin(inputPin), buttonPin(simButtonPin),
+      noPulseResponse(false), responseStartTime(0),
+      lastBeatTime(0), hrLastState(LOW), bpm(0), invalidPulseCount(0),
+      bpmReadIndex(0), averageBPM(0), isBpmReady(false), contactDetected(true),
+      contactLostNotified(false), lastHrReadTime(0) {
+    for (int i = 0; i < NUM_BPM_READINGS; i++) {
+        bpmReadings[i] = 0;
     }
 }
 
 void HeartSensor::init() {
-    bootTime = millis();
-    Serial.println("➔ [시스템 기동] 스마트 휠체어 안전 제어 시스템을 시작합니다.");
+    pinMode(buttonPin, INPUT_PULLUP);
+    pinMode(pin, INPUT);
+    lastBeatTime = millis();
+
+    Serial.println("=================================================");
+    Serial.println(" SmartChair Safety Control System                ");
+    Serial.println("=================================================");
 }
 
 void HeartSensor::update(unsigned long currentTime) {
-    unsigned long elapsedTime = currentTime - bootTime;
-    int rawValue = analogRead(pin);
+    // 버튼 입력에 따른 안전 대응은 리셋 전까지 유지한다.
+    if (digitalRead(buttonPin) == LOW && !noPulseResponse) {
+        noPulseResponse = true;
+        responseStartTime = currentTime;
+        averageBPM = 0;
+        Serial.println("\n[상태] 테스트 버튼 입력: 무맥박 상태 대응을 시작합니다.\n");
+    }
 
-    // 이동 평균 필터 적용 (노이즈 감쇄)
-    total = total - readings[readIndex];
-    readings[readIndex] = rawValue;
-    total = total + readings[readIndex];
-    
-    readIndex = readIndex + 1;
-    if (readIndex >= NUM_READINGS) readIndex = 0;
-    
-    averageHeartValue = total / NUM_READINGS;
+    if (!noPulseResponse) {
+        if (currentTime - lastHrReadTime >= 10) {
+            lastHrReadTime = currentTime;
+            bool hrCurrentState = (digitalRead(pin) == HIGH);
 
-    // 단계별 시스템 캘리브레이션 제어
-    if (!isCalibrated) {
-        if (elapsedTime < 3000) {
-            currentState = STATE_SETTLING;
-            executeDebugPrint(currentTime);
-            return;
-        } 
-        else if (elapsedTime >= 3000 && elapsedTime < 8000) {
-            currentState = STATE_CALIBRATING;
-            if (averageHeartValue > calMax) calMax = averageHeartValue;
-            if (averageHeartValue < calMin) calMin = averageHeartValue;
-            executeDebugPrint(currentTime);
-            return;
-        } 
-        else {
-            if ((calMax - calMin) < 30) {
-                Serial.println("⚠ 오류: 맥박 파형이 너무 약합니다. 캘리브레이션을 재시작합니다.");
-                bootTime = currentTime;
-                calMax = 0; calMin = 1023;  
-                return;
+            if (hrCurrentState == HIGH && hrLastState == LOW) {
+                unsigned long ibi = currentTime - lastBeatTime;
+                lastBeatTime = currentTime;
+
+                // 정상 맥박 범위(30~200 BPM)
+                if (ibi > 300 && ibi < 2000) {
+                    invalidPulseCount = 0;
+                    bpm = static_cast<int>(60000UL / ibi);
+
+                    bpmReadings[bpmReadIndex] = bpm;
+                    bpmReadIndex++;
+                    if (bpmReadIndex >= NUM_BPM_READINGS) {
+                        bpmReadIndex = 0;
+                        isBpmReady = true;
+                    }
+
+                    if (isBpmReady) {
+                        int highNoiseCount = 0;
+                        for (int i = 0; i < NUM_BPM_READINGS; i++) {
+                            if (bpmReadings[i] >= 140) {
+                                highNoiseCount++;
+                            }
+                        }
+
+                        if (highNoiseCount >= 4) {
+                            contactDetected = false;
+                            if (!contactLostNotified) {
+                                Serial.println("[상태] 센서 접촉 해제 상태로 판정되었습니다. 제동 판단에서 제외합니다.");
+                                contactLostNotified = true;
+                            }
+                        } else {
+                            contactDetected = true;
+                            if (contactLostNotified) {
+                                Serial.println("[상태] 센서 접촉이 확인되었습니다. 측정을 재개합니다.");
+                                contactLostNotified = false;
+                            }
+
+                            int sortedBpm[NUM_BPM_READINGS];
+                            for (int i = 0; i < NUM_BPM_READINGS; i++) {
+                                sortedBpm[i] = bpmReadings[i];
+                            }
+
+                            for (int i = 0; i < NUM_BPM_READINGS - 1; i++) {
+                                for (int j = 0; j < NUM_BPM_READINGS - i - 1; j++) {
+                                    if (sortedBpm[j] > sortedBpm[j + 1]) {
+                                        int temp = sortedBpm[j];
+                                        sortedBpm[j] = sortedBpm[j + 1];
+                                        sortedBpm[j + 1] = temp;
+                                    }
+                                }
+                            }
+
+                            averageBPM = (sortedBpm[1] + sortedBpm[2] + sortedBpm[3]) / 3;
+                        }
+                    } else {
+                        // 샘플 5개가 모이기 전에는 센서 접촉 상태로 처리한다.
+                        contactDetected = true;
+                        contactLostNotified = false;
+                    }
+
+                    if (isBpmReady && contactDetected && averageBPM < 40 && !noPulseResponse) {
+                        noPulseResponse = true;
+                        responseStartTime = currentTime;
+                        averageBPM = 0;
+                        Serial.println("\n[상태] 평균 심박 저하 감지: 완만한 안전 제동을 시작합니다.\n");
+                    }
+                } else {
+                    invalidPulseCount++;
+                    if (invalidPulseCount >= 8) {
+                        contactDetected = false;
+                        if (!contactLostNotified) {
+                            Serial.println("[상태] 반복적인 신호 이상 감지: 센서 접촉 해제 상태로 전환합니다.");
+                            contactLostNotified = true;
+                        }
+                    }
+                }
             }
-            
-            threshold = calMin + ((calMax - calMin) * 0.6);
-            int margin = (calMax - calMin) * 2; 
-            upperLimit = calMax + margin;
-            lowerLimit = calMin - margin;
-            
-            if (upperLimit > 1023) upperLimit = 1020;
-            if (lowerLimit < 0) lowerLimit = 10;
 
-            isCalibrated = true;
-            currentState = STATE_NORMAL;
-            lastBeatTime = currentTime; 
-            
-            Serial.println("\n✅ 학습 완료! 주행을 시작합니다.");
-            Serial.print(">> 맥박 카운트 기준(Threshold): "); Serial.println(threshold);
-            Serial.print(">> 🚨 심정지/이탈 하한선(Lower): "); Serial.println(lowerLimit);
-            Serial.print(">> 🚨 패닉/과흥분 상한선(Upper): "); Serial.println(upperLimit);
-            Serial.println("-------------------------------------\n");
+            hrLastState = hrCurrentState;
         }
+    } else {
+        averageBPM = 0;
     }
 
-    // 임계값 초과/미만인 경우 즉각적인 비상 상태 판단
-    if (isCalibrated) {
-        if (averageHeartValue > upperLimit) {
-            currentState = STATE_PANIC;
-        } 
-        else if (averageHeartValue < lowerLimit) {
-            currentState = STATE_CARDIAC_ARREST;
-        }
+    if (isBpmReady && contactDetected && !noPulseResponse &&
+        currentTime - lastBeatTime > NO_PULSE_TIMEOUT) {
+        noPulseResponse = true;
+        responseStartTime = currentTime;
+        averageBPM = 0;
+        Serial.println("\n[상태] 2초간 무맥박 상태 감지: 완만한 안전 제동을 시작합니다.\n");
     }
-
-    // 정상 범위 내에서 박동 유무 판단 및 타임아웃 계산
-    if (currentState != STATE_PANIC && currentState != STATE_CARDIAC_ARREST) {
-        if (averageHeartValue > threshold && !isBeat) {
-            if (currentTime - lastBeatTime > 300) { // 300ms 불응기 설정 (오탐 방지)
-                lastBeatTime = currentTime; 
-                isBeat = true;
-            }
-        } else if (averageHeartValue < threshold) {
-            isBeat = false; 
-        }
-
-        // 마지막 심박 이후 경과 시간 기준으로 FSM 상태 전이
-        unsigned long timeSinceLastBeat = currentTime - lastBeatTime;
-
-        if (timeSinceLastBeat > ARREST_TIMEOUT) {
-            currentState = STATE_CARDIAC_ARREST;
-        } 
-        else if (timeSinceLastBeat > DANGER_TIMEOUT) {
-            currentState = STATE_DANGER_SUSPECTED;
-        } 
-        else {
-            currentState = STATE_NORMAL;
-        }
-    }
-
-    executeDebugPrint(currentTime);
 }
 
-SystemState HeartSensor::getState() const {
-    return currentState;
+bool HeartSensor::isNoPulseResponse() const {
+    return noPulseResponse;
 }
 
-int HeartSensor::getAverageValue() const {
-    return averageHeartValue;
+unsigned long HeartSensor::getResponseStartTime() const {
+    return responseStartTime;
 }
 
-void HeartSensor::executeDebugPrint(unsigned long currentTime) {
-    // 상태 변동 발생 시 1회만 디버그 메시지를 출력하기 위한 변수
-    static SystemState lastLoggedState = (SystemState)-1; 
-    
-    // 초기 보정 단계 진행 상태 모니터링 출력
-    if (currentState == STATE_SETTLING || currentState == STATE_CALIBRATING) {
-        if (lastLoggedState != currentState) {
-            lastLoggedState = currentState; 
-            
-            if (currentState == STATE_SETTLING) {
-                Serial.println("■ [0~3초] 밴드 착용 및 센서 안정화 대기 중...");
-            } 
-            else if (currentState == STATE_CALIBRATING) {
-                Serial.println("■ [3~8초] 파형 학습 중... (가만히 계세요)");
-            }
-        }
-        return; 
-    }
+bool HeartSensor::isContactDetected() const {
+    return contactDetected;
+}
+
+bool HeartSensor::hasAverageBPM() const {
+    return isBpmReady;
+}
+
+int HeartSensor::getAverageBPM() const {
+    return averageBPM;
 }
