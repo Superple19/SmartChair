@@ -6,22 +6,23 @@ void ServoBrake::init() {
     leftServo.attach(LEFT_SERVO_PIN);
 
     // 초기 위치: 제동 해제
-    writeAngle(180);
+    writeAngle(SERVO_MAX_ANGLE);
 }
 
 void ServoBrake::writeAngle(int rightAngle) {
-    rightAngle = constrain(rightAngle, 0, 180);
+    rightAngle = constrain(rightAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
 
     // 좌측은 기준 제동량, 우측은 장력 보정을 적용한다.
-    int leftAngle = 180 - rightAngle;
+    int leftAngle = SERVO_MAX_ANGLE - rightAngle;
     int rightBrakeProgress = leftAngle;
-    int adjustedRightAngle = 180 -
-        (int)(rightBrakeProgress * RIGHT_BRAKE_SCALE + 0.5);
+    int adjustedRightAngle = SERVO_MAX_ANGLE -
+        (int)(rightBrakeProgress * RIGHT_BRAKE_SCALE + SERVO_ROUNDING_OFFSET);
 
-    rightServo.write(constrain(adjustedRightAngle, 0, 180));
+    rightServo.write(constrain(adjustedRightAngle, SERVO_MIN_ANGLE,
+                               SERVO_MAX_ANGLE));
     leftServo.write(leftAngle);
 }
 
 void ServoBrake::writeMaxBrake() {
-    writeAngle(0);
+    writeAngle(SERVO_MIN_ANGLE);
 }

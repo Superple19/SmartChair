@@ -11,7 +11,7 @@ BrakeController brakeController;
 ServoBrake brake;
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(DEBUG_BAUD_RATE);
     heart.init();
     leftLidar.init();
     rightLidar.init();
@@ -38,10 +38,10 @@ void loop() {
     brake.writeAngle(rightFinalAngle);
 
     static unsigned long lastPrintTime = 0;
-    if (currentTime - lastPrintTime >= 250) {
+    if (currentTime - lastPrintTime >= TELEMETRY_INTERVAL) {
         lastPrintTime = currentTime;
 
-        int leftFinalAngle = 180 - rightFinalAngle;
+        int leftFinalAngle = SERVO_MAX_ANGLE - rightFinalAngle;
 
         Serial.print("좌측 속도: ");
         Serial.print((int)leftLidar.getSpeed());
@@ -66,14 +66,15 @@ void loop() {
 
         if (heart.isNoPulseResponse()) {
             Serial.print("도 [무맥박 상태 대응 제동 중] 제동률: ");
-            Serial.print(map(rightFinalAngle, 180, 0, 0, 100));
+            Serial.print(map(rightFinalAngle, SERVO_MAX_ANGLE, SERVO_MIN_ANGLE,
+                            SERVO_MIN_ANGLE, BRAKE_PERCENT_MAX));
             Serial.println("%");
         } else if (brakeController.isHoldActive(currentTime) &&
                    brakeController.getApproachCount() == 0) {
             Serial.println("도 [자동 제동 유지 중]");
-        } else if (rightFinalAngle <= 0) {
+        } else if (rightFinalAngle <= BRAKE_FULL_ANGLE) {
             Serial.println("도 [즉시 제동]");
-        } else if (rightFinalAngle < 180) {
+        } else if (rightFinalAngle < BRAKE_RELEASE_ANGLE) {
             Serial.println("도 [비례 제동]");
         } else {
             Serial.println("도 [제동 해제]");

@@ -31,7 +31,7 @@ void HeartSensor::update(unsigned long currentTime) {
     }
 
     if (!noPulseResponse) {
-        if (currentTime - lastHrReadTime >= 10) {
+        if (currentTime - lastHrReadTime >= HEART_SAMPLE_INTERVAL) {
             lastHrReadTime = currentTime;
             bool hrCurrentState = (digitalRead(pin) == HIGH);
 
@@ -40,9 +40,9 @@ void HeartSensor::update(unsigned long currentTime) {
                 lastBeatTime = currentTime;
 
                 // 정상 맥박 범위(30~200 BPM)
-                if (ibi > 300 && ibi < 2000) {
+                if (ibi > MIN_VALID_IBI && ibi < MAX_VALID_IBI) {
                     invalidPulseCount = 0;
-                    bpm = static_cast<int>(60000UL / ibi);
+                    bpm = static_cast<int>(MILLISECONDS_PER_MINUTE / ibi);
 
                     bpmReadings[bpmReadIndex] = bpm;
                     bpmReadIndex++;
@@ -54,12 +54,12 @@ void HeartSensor::update(unsigned long currentTime) {
                     if (isBpmReady) {
                         int highNoiseCount = 0;
                         for (int i = 0; i < NUM_BPM_READINGS; i++) {
-                            if (bpmReadings[i] >= 140) {
+                            if (bpmReadings[i] >= CONTACT_LOST_BPM_THRESHOLD) {
                                 highNoiseCount++;
                             }
                         }
 
-                        if (highNoiseCount >= 4) {
+                        if (highNoiseCount >= CONTACT_LOST_SAMPLE_COUNT) {
                             contactDetected = false;
                             if (!contactLostNotified) {
                                 Serial.println("[상태] 센서 접촉 해제 상태로 판정되었습니다. 제동 판단에서 제외합니다.");
@@ -87,7 +87,8 @@ void HeartSensor::update(unsigned long currentTime) {
                                 }
                             }
 
-                            averageBPM = (sortedBpm[1] + sortedBpm[2] + sortedBpm[3]) / 3;
+                            averageBPM = (sortedBpm[1] + sortedBpm[2] + sortedBpm[3]) /
+                                         TRIMMED_AVERAGE_COUNT;
                         }
                     } else {
                         // 샘플 5개가 모이기 전에는 센서 접촉 상태로 처리한다.
@@ -95,7 +96,8 @@ void HeartSensor::update(unsigned long currentTime) {
                         contactLostNotified = false;
                     }
 
-                    if (isBpmReady && contactDetected && averageBPM < 40 && !noPulseResponse) {
+                    if (isBpmReady && contactDetected &&
+                        averageBPM < NO_PULSE_BPM_THRESHOLD && !noPulseResponse) {
                         noPulseResponse = true;
                         responseStartTime = currentTime;
                         averageBPM = 0;
@@ -103,7 +105,7 @@ void HeartSensor::update(unsigned long currentTime) {
                     }
                 } else {
                     invalidPulseCount++;
-                    if (invalidPulseCount >= 8) {
+                    if (invalidPulseCount >= INVALID_PULSE_LIMIT) {
                         contactDetected = false;
                         if (!contactLostNotified) {
                             Serial.println("[상태] 반복적인 신호 이상 감지: 센서 접촉 해제 상태로 전환합니다.");

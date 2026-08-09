@@ -3,23 +3,24 @@
 
 LidarSensor::LidarSensor(HardwareSerial* p)
     : port(p), dist(0), strength(0), prevDist(0), speed(0.0),
-      ttc(99.0), lastTime(0) {}
+      ttc(INVALID_TTC), lastTime(0) {}
 
 void LidarSensor::init() {
-    port->begin(115200);
+    port->begin(LIDAR_BAUD_RATE);
 }
 
 void LidarSensor::update(unsigned long currentTime) {
     // TF-Luna 표준 9바이트 패킷 파싱. 현재 구현에서는 체크섬 검증을 적용하지 않는다.
-    if (port->available() >= 9) {
-        if (port->read() == 0x59 && port->peek() == 0x59) {
+    if (port->available() >= LIDAR_PACKET_SIZE) {
+        if (port->read() == LIDAR_FRAME_HEADER &&
+            port->peek() == LIDAR_FRAME_HEADER) {
             port->read();
 
             int d_L = port->read();
             int d_H = port->read();
             int s_L = port->read();
             int s_H = port->read();
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < LIDAR_RESERVED_BYTES; i++) {
                 port->read();
             }
 
@@ -27,17 +28,18 @@ void LidarSensor::update(unsigned long currentTime) {
             int rawStrength = s_L + (s_H * 256);
 
             if (rawStrength >= MIN_STRENGTH_THRESHOLD &&
-                rawDist > 0 && rawDist < 800) {
+                rawDist > LIDAR_MIN_DISTANCE && rawDist < LIDAR_MAX_DISTANCE) {
                 dist = rawDist;
                 strength = rawStrength;
             } else {
-                dist = 800;
+                dist = LIDAR_MAX_DISTANCE;
                 strength = 0;
             }
 
-            if (currentTime - lastTime >= 100) {
-                float dt = (currentTime - lastTime) / 1000.0;
-                if (dt > 0.001 && dist < 800 && prevDist > 0 && prevDist < 800) {
+            if (currentTime - lastTime >= LIDAR_SPEED_UPDATE_INTERVAL) {
+                float dt = (currentTime - lastTime) / MILLISECONDS_PER_SECOND;
+                if (dt > MIN_SPEED_DT && dist < LIDAR_MAX_DISTANCE &&
+                    prevDist > LIDAR_MIN_DISTANCE && prevDist < LIDAR_MAX_DISTANCE) {
                     float calculatedSpeed = (prevDist - dist) / dt;
 
                     if (calculatedSpeed >= MAX_SPEED_NOISE ||
@@ -47,14 +49,14 @@ void LidarSensor::update(unsigned long currentTime) {
                         speed = calculatedSpeed;
                     }
 
-                    if (speed > 0 && dist < 400) {
+                    if (speed > 0 && dist < TTC_DISTANCE_LIMIT) {
                         ttc = static_cast<float>(dist) / speed;
                     } else {
-                        ttc = 99.0;
+                        ttc = INVALID_TTC;
                     }
                 } else {
                     speed = 0.0;
-                    ttc = 99.0;
+                    ttc = INVALID_TTC;
                 }
 
                 prevDist = dist;
@@ -66,31 +68,36 @@ void LidarSensor::update(unsigned long currentTime) {
 
 int LidarSensor::calculateBrakeAngle() const {
     // 제동각: 180=제동 해제, 0=최대 제동
-    if (strength < MIN_STRENGTH_THRESHOLD || dist <= 0 || dist > 800) {
-        return 180;
+    if (strength < MIN_STRENGTH_THRESHOLD || dist <= LIDAR_MIN_DISTANCE ||
+        dist > LIDAR_MAX_DISTANCE) {
+        return BRAKE_RELEASE_ANGLE;
     }
 
     if (speed <= MIN_SPEED_THRESHOLD) {
-        return 180;
+        return BRAKE_RELEASE_ANGLE;
     }
 
-    if (dist <= 120 || ttc <= 1.0) {
-        return 0;
+    if (dist <= IMMEDIATE_BRAKE_DISTANCE || ttc <= IMMEDIATE_BRAKE_TTC) {
+        return BRAKE_FULL_ANGLE;
     }
 
     float requiredBrakingDistance = (speed * speed) / (2.0 * MAX_DECELERATION);
     float approachBoundary = requiredBrakingDistance + SAFETY_MARGIN;
 
-    if (dist > 400 && dist > approachBoundary && ttc > 2.5) {
-        return 180;
+    if (dist > TTC_DISTANCE_LIMIT && dist > approachBoundary &&
+        ttc > FREE_ROLL_TTC_THRESHOLD) {
+        return BRAKE_RELEASE_ANGLE;
     }
 
     if (dist <= approachBoundary) {
-        int proportionalAngle = map(dist, (long)approachBoundary, 120, 140, 20);
-        return constrain(proportionalAngle, 20, 140);
+        int proportionalAngle = map(
+            dist, (long)approachBoundary, IMMEDIATE_BRAKE_DISTANCE,
+            PROPORTIONAL_MAX_ANGLE, PROPORTIONAL_MIN_ANGLE);
+        return constrain(proportionalAngle, PROPORTIONAL_MIN_ANGLE,
+                         PROPORTIONAL_MAX_ANGLE);
     }
 
-    return 180;
+    return BRAKE_RELEASE_ANGLE;
 }
 
 int LidarSensor::getDistance() const {
