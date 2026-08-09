@@ -6,13 +6,13 @@
 
 class ServoBrake {
 private:
-    Servo leftServo;
     Servo rightServo;
+    Servo leftServo;
 
 public:
     void init();
-    void writeAngle(int angle);
-    void writeEmergencyStop();
+    void writeAngle(int rightAngle);
+    void writeMaxBrake();
 };
 
 #endif

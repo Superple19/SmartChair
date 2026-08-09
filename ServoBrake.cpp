@@ -2,21 +2,26 @@
 #include "Config.h"
 
 void ServoBrake::init() {
-    leftServo.attach(LEFT_SERVO_PIN);
     rightServo.attach(RIGHT_SERVO_PIN);
-    writeAngle(0); // 제동 해제 상태로 기동
+    leftServo.attach(LEFT_SERVO_PIN);
+
+    // 초기 위치: 제동 해제
+    writeAngle(180);
 }
 
-void ServoBrake::writeAngle(int angle) {
-    // 0~90 범위 입력을 각 서보의 튜닝 범위(RELEASE ~ ENGAGE)로 동적 맵핑 계산
-    int targetLeft = map(angle, 0, 90, LEFT_RELEASE_ANGLE, LEFT_ENGAGE_ANGLE);
-    int targetRight = map(angle, 0, 90, RIGHT_RELEASE_ANGLE, RIGHT_ENGAGE_ANGLE);
-    
-    leftServo.write(targetLeft);
-    rightServo.write(targetRight);
+void ServoBrake::writeAngle(int rightAngle) {
+    rightAngle = constrain(rightAngle, 0, 180);
+
+    // 좌측은 기준 제동량, 우측은 장력 보정을 적용한다.
+    int leftAngle = 180 - rightAngle;
+    int rightBrakeProgress = leftAngle;
+    int adjustedRightAngle = 180 -
+        (int)(rightBrakeProgress * RIGHT_BRAKE_SCALE + 0.5);
+
+    rightServo.write(constrain(adjustedRightAngle, 0, 180));
+    leftServo.write(leftAngle);
 }
 
-void ServoBrake::writeEmergencyStop() {
-    leftServo.write(LEFT_ENGAGE_ANGLE);
-    rightServo.write(RIGHT_ENGAGE_ANGLE);
+void ServoBrake::writeMaxBrake() {
+    writeAngle(0);
 }
