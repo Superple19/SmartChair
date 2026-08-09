@@ -14,10 +14,12 @@ private:
     unsigned long lastTime;
 
 public:
-    LidarSensor(HardwareSerial* p);
+    explicit LidarSensor(HardwareSerial* p);
+
     void init();
     void update(unsigned long currentTime);
     int calculateBrakeAngle() const;
+
     int getDistance() const;
     float getTTC() const;
     float getSpeed() const;
