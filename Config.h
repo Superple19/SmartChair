@@ -2,8 +2,8 @@
 #define CONFIG_H
 
 // Arduino Mega 2560 핀 배치
-#define RIGHT_SERVO_PIN 2
-#define LEFT_SERVO_PIN 3
+#define LEFT_SERVO_PIN 2
+#define RIGHT_SERVO_PIN 3
 #define BUTTON_PIN 4
 #define HEART_PIN 5
 #define RIGHT_BRAKE_SCALE 0.98
